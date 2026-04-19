@@ -1,0 +1,147 @@
+name: bigdata-spark-lab
+
+services:
+  postgres-db:
+    image: postgres:16-alpine
+    container_name: spark-lab-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: spark_lab
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      TZ: Europe/Moscow
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d spark_lab"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - bigdata-network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: spark-lab-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "clickhouse", "--password", "clickhouse", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks:
+      - bigdata-network
+
+  spark-master:
+    image: bitnami/spark:3.5.0
+    container_name: spark-lab-master
+    restart: unless-stopped
+    environment:
+      SPARK_MODE: master
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
+      SPARK_USER: spark
+    ports:
+      - "${SPARK_MASTER_UI_PORT:-8082}:8080"
+      - "${SPARK_MASTER_PORT:-7077}:7077"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec '</dev/tcp/127.0.0.1/8080'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    volumes:
+      - ./spark:/opt/spark-apps:ro
+      - ./исходные данные:/mock_data:ro
+    networks:
+      - bigdata-network
+
+  spark-worker:
+    image: bitnami/spark:3.5.0
+    container_name: spark-lab-worker
+    restart: unless-stopped
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: 2G
+      SPARK_WORKER_CORES: 2
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
+      SPARK_USER: spark
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec '</dev/tcp/127.0.0.1/8081'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    volumes:
+      - ./spark:/opt/spark-apps:ro
+      - ./исходные данные:/mock_data:ro
+    networks:
+      - bigdata-network
+
+  etl-runner:
+    image: bitnami/spark:3.5.0
+    container_name: spark-lab-etl-runner
+    restart: "no"
+    command:
+      - bash
+      - -lc
+      - >
+        /opt/bitnami/spark/bin/spark-submit
+        --master spark://spark-master:7077
+        --packages org.postgresql:postgresql:42.7.1,com.clickhouse:clickhouse-jdbc:0.4.6
+        --conf spark.sql.adaptive.enabled=true
+        --conf spark.sql.legacy.timeParserPolicy=LEGACY
+        /opt/spark-apps/main.py
+    environment:
+      POSTGRES_HOST: postgres-db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: spark_lab
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+      spark-worker:
+        condition: service_healthy
+    volumes:
+      - ./spark:/opt/spark-apps:ro
+      - ./исходные данные:/mock_data:ro
+    profiles:
+      - run-etl
+    networks:
+      - bigdata-network
+
+volumes:
+  postgres-data:
+  clickhouse-data:
+
+networks:
+  bigdata-network:
+    driver: bridge

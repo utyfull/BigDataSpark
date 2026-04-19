@@ -1,0 +1,19 @@
+@startuml
+skinparam backgroundColor #FFFFFF
+skinparam componentStyle rectangle
+skinparam linetype ortho
+
+actor "CSV files\nsource data/*.csv" as csv
+
+database "PostgreSQL\nmock_data" as stage
+database "PostgreSQL\nstar schema" as postgres
+component "Apache Spark\nETL job" as spark
+component "Apache Spark\nreport builder" as reports
+database "ClickHouse\nreport tables" as clickhouse
+
+csv --> spark : read CSV
+spark --> stage : load raw rows
+spark --> postgres : write dim_* and fact_sale
+postgres --> reports : read star schema
+reports --> clickhouse : JDBC write
+@enduml
